@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  netdata-web-client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NETDATA_REPO_REF: ${NETDATA_REPO_REF}
+    image: local/netdata-web-client:latest
+    restart: unless-stopped
+    environment:
+      MCP_WS_URL: ${MCP_WS_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      PORT: 3456
+    networks:
+      - traefik-public
+    labels:
+      # Expose to traefik
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+
+      # --- Router (HTTP->HTTPS redirect happens in your Traefik) ---
+      - traefik.http.routers.netdata-web.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.netdata-web.entrypoints=https
+      - traefik.http.routers.netdata-web.tls=true
+      - traefik.http.routers.netdata-web.tls.certresolver=le
+
+      # --- Middlewares: BasicAuth + RateLimit (+ optional IPWhitelist) ---
+      - traefik.http.routers.netdata-web.middlewares=netdata-web-auth,netdata-web-ratelimit,netdata-web-allowlist@docker
+
+      # BasicAuth credentials from .env (supports multiple "user:hash" separated by commas)
+      - traefik.http.middlewares.netdata-web-auth.basicauth.users=${BASICAUTH_USERS}
+
+      # Global RateLimit (Balanced)
+      - traefik.http.middlewares.netdata-web-ratelimit.ratelimit.average=20
+      - traefik.http.middlewares.netdata-web-ratelimit.ratelimit.burst=40
+      - traefik.http.middlewares.netdata-web-ratelimit.ratelimit.period=1s
+
+      # Grouping by client IP (with correct XFF handling)
+      # Ignore your reverse proxies/load balancers here:
+      - traefik.http.middlewares.netdata-web-ratelimit.ratelimit.sourcecriterion.ipstrategy.excludedips=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # Choose the right XFF hop (increase if you have more than one proxy in front)
+      - traefik.http.middlewares.netdata-web-ratelimit.ratelimit.sourcecriterion.ipstrategy.depth=1
+      # Optional: aggregate IPv6 by subnet (/64 typical)
+      - traefik.http.middlewares.netdata-web-ratelimit.ratelimit.sourcecriterion.ipstrategy.ipv6subnet=/64
+
+
+      # Optional IP allowlist (set ALLOWLIST_CIDRS in .env or leave empty to disable)
+      - traefik.http.middlewares.netdata-web-allowlist.ipwhitelist.sourcerange=${ALLOWLIST_CIDRS}
+
+      # Service port inside the container
+      - traefik.http.services.netdata-web.loadbalancer.server.port=3456
+
+networks:
+  traefik-public:
+    external: true
+
